@@ -2,21 +2,26 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Pixel Stretch</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.44.0/tabler-icons.min.css">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { overscroll-behavior: none; }
 
 body {
   background: #111;
   color: #fff;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #drop-overlay {
@@ -119,6 +124,7 @@ body.dragging #drop-overlay { display: flex; }
   max-width: 100%;
   max-height: 100%;
   cursor: crosshair;
+  touch-action: none;
 }
 
 /* ---- design tokens ---- */
@@ -254,11 +260,19 @@ body.dragging #drop-overlay { display: flex; }
 #padding-val { color: #666; min-width: 28px; }
 
 @media (max-width: 640px) {
+  /* Chrome for Android puts its address bar at the BOTTOM — keep the toolbar on top. */
+  #app-screen { flex-direction: column-reverse; }
+  #canvas-wrap { padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom)); }
+  #padding-ctrl { bottom: calc(12px + env(safe-area-inset-bottom)); }
+
   #toolbar {
     flex-wrap: wrap;
     row-gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-3);
+    padding-top: calc(var(--sp-2) + env(safe-area-inset-top));
     min-height: 0;
+    border-top: none;
+    border-bottom: 1px solid #262626;
   }
   .tb-status {
     order: -1;
@@ -274,10 +288,13 @@ body.dragging #drop-overlay { display: flex; }
   }
   .tb-modes { justify-content: center; }
   .mode-btn, .ctrl-btn {
-    padding: var(--sp-1) 6px;
+    padding: 6px 8px;
     flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
   }
-  .mode-btn i, .ctrl-btn i { font-size: 16px; }
+  .mode-btn i, .ctrl-btn i { font-size: 18px; }
   .mode-btn span, .ctrl-btn span { font-size: 8px; }
 }
 </style>
@@ -353,6 +370,7 @@ let undoStack     = [];
 
 let selection    = null; // { x, y, w, h } image coords, normalized
 let isDragging   = false;
+let isTouch      = false;
 let dragStartImg = { x: 0, y: 0 };
 let dragCurImg   = { x: 0, y: 0 };
 let previewData  = null;
@@ -800,6 +818,8 @@ function drawOverlay() {
 // ================================================================
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
+  e.preventDefault();
+  isTouch = e.pointerType !== 'mouse';
   canvas.setPointerCapture(e.pointerId); // 画面外でも追跡
   isDragging   = true;
   dragStartImg = toImg(e.clientX, e.clientY);
@@ -809,6 +829,7 @@ canvas.addEventListener('pointerdown', e => {
 
 canvas.addEventListener('pointermove', e => {
   if (!isDragging) return;
+  e.preventDefault();
   dragCurImg = toImg(e.clientX, e.clientY);
 
   if (phase === 'select') { render(); return; }
@@ -841,7 +862,7 @@ canvas.addEventListener('pointerup', e => {
     dragStartImg.y >= selection.y && dragStartImg.y <= selection.y + selection.h
   );
 
-  if (moved < 5) {
+  if (moved < (isTouch ? 12 : 5)) {
     if (insideSelection) {
       // retry: discard pending preview, stay selected
       previewData = null;
@@ -860,6 +881,12 @@ canvas.addEventListener('pointerup', e => {
     return;
   }
 
+  render(previewData);
+});
+
+canvas.addEventListener('pointercancel', () => {
+  if (!isDragging) return;
+  isDragging = false;
   render(previewData);
 });
 
