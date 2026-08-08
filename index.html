@@ -118,6 +118,15 @@ body.dragging #drop-overlay { display: flex; }
   background: #000;
   padding: 24px;
   position: relative;
+  overscroll-behavior: contain;
+}
+#canvas-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+#canvas-wrap::-webkit-scrollbar-thumb { background: #2c2c2c; border-radius: 4px; }
+#zoom-val {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  min-width: 30px;
+  text-align: center;
 }
 #canvas {
   display: block;
@@ -281,12 +290,22 @@ body.dragging #drop-overlay { display: flex; }
     padding-right: 0;
   }
   .tb-divider { display: none; }
-  .tb-modes, .tb-actions {
-    flex: 1 1 auto;
+  .tb-modes {
+    flex: 1 0 100%;
+    order: 1;
     overflow-x: auto;
+    justify-content: center;
+  }
+  .tb-zoom {
+    flex: 1 1 auto;
+    order: 2;
+    justify-content: flex-end;
+  }
+  .tb-actions {
+    flex: 1 1 auto;
+    order: 3;
     justify-content: flex-start;
   }
-  .tb-modes { justify-content: center; }
   .mode-btn, .ctrl-btn {
     padding: 6px 8px;
     flex: 0 0 auto;
@@ -336,6 +355,12 @@ body.dragging #drop-overlay { display: flex; }
       <button class="mode-btn"        data-mode="4" title="Slide: Push"><i class="ti ti-arrow-bar-right"></i><span>Push</span></button>
     </div>
     <div class="tb-divider"></div>
+    <div class="tb-group tb-zoom">
+      <button class="ctrl-btn" id="btn-zoom-out" title="Zoom out"><i class="ti ti-minus"></i></button>
+      <button class="ctrl-btn" id="btn-zoom-fit" title="Fit to screen"><span id="zoom-val">FIT</span></button>
+      <button class="ctrl-btn" id="btn-zoom-in" title="Zoom in"><i class="ti ti-plus"></i></button>
+    </div>
+    <div class="tb-divider"></div>
     <div class="tb-group tb-actions">
       <button class="ctrl-btn" id="btn-open" title="画像を開く"><i class="ti ti-photo-plus"></i><span>Open</span></button>
       <button class="ctrl-btn" id="btn-reset" title="Reset (1)"><i class="ti ti-refresh"></i><span>Reset</span></button>
@@ -372,6 +397,8 @@ let selection    = null; // { x, y, w, h } image coords, normalized
 let isDragging   = false;
 let isTouch      = false;
 let dragFromOutside = false;
+const activePointers = new Map();
+let pinchStart = null;
 let dragStartImg = { x: 0, y: 0 };
 let dragCurImg   = { x: 0, y: 0 };
 let previewData  = null;
@@ -410,6 +437,7 @@ function loadFile(file) {
     undoStack = []; selection = null; phase = 'select'; previewData = null;
     URL.revokeObjectURL(url);
     sampleBadge.classList.add('hidden');
+    setZoom(1);
     updateUI(); render();
   };
   img.src = url;
@@ -458,6 +486,54 @@ function toImg(clientX, clientY) {
     x: Math.round((clientX - r.left) * canvas.width  / r.width),
     y: Math.round((clientY - r.top)  * canvas.height / r.height),
   };
+}
+
+// ---- Zoom -------------------------------------------------------
+let zoom = 1; // 1 = fit to screen
+const ZOOM_MIN = 1, ZOOM_MAX = 8;
+
+function applyZoom(anchor) {
+  const wrap = document.getElementById('canvas-wrap');
+  if (zoom <= 1.001) {
+    zoom = 1;
+    canvas.style.width = canvas.style.height = '';
+    canvas.style.maxWidth = canvas.style.maxHeight = '100%';
+  } else {
+    const cs = getComputedStyle(wrap);
+    const availW = wrap.clientWidth  - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const availH = wrap.clientHeight - parseFloat(cs.paddingTop)  - parseFloat(cs.paddingBottom);
+    const fit = Math.min(availW / canvas.width, availH / canvas.height, 1);
+    canvas.style.maxWidth = canvas.style.maxHeight = 'none';
+    canvas.style.width  = Math.round(canvas.width  * fit * zoom) + 'px';
+    canvas.style.height = Math.round(canvas.height * fit * zoom) + 'px';
+  }
+  const zv = document.getElementById('zoom-val');
+  if (zv) zv.textContent = zoom === 1 ? 'FIT' : Math.round(zoom * 100) + '%';
+
+  if (anchor) {
+    requestAnimationFrame(() => {
+      const r = canvas.getBoundingClientRect();
+      const wr = wrap.getBoundingClientRect();
+      wrap.scrollLeft += (r.left + r.width  * anchor.u) - (wr.left + anchor.sx);
+      wrap.scrollTop  += (r.top  + r.height * anchor.v) - (wr.top  + anchor.sy);
+    });
+  }
+}
+
+function anchorAt(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const wr = document.getElementById('canvas-wrap').getBoundingClientRect();
+  return {
+    u: (clientX - r.left) / r.width,
+    v: (clientY - r.top)  / r.height,
+    sx: clientX - wr.left,
+    sy: clientY - wr.top,
+  };
+}
+
+function setZoom(z, anchor) {
+  zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  applyZoom(anchor);
 }
 
 function normRect(x1, y1, x2, y2) {
@@ -820,6 +896,21 @@ function drawOverlay() {
 canvas.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   e.preventDefault();
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (activePointers.size >= 2) { // pinch takes over — abandon any edit gesture
+    isDragging = false;
+    const pts = [...activePointers.values()];
+    pinchStart = {
+      dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1,
+      zoom,
+      anchor: anchorAt((pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2),
+      mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+    };
+    render(previewData);
+    return;
+  }
+
   isTouch = e.pointerType !== 'mouse';
   canvas.setPointerCapture(e.pointerId); // 画面外でも追跡
   isDragging   = true;
@@ -838,6 +929,21 @@ function inSelection(p) {
 }
 
 canvas.addEventListener('pointermove', e => {
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pinchStart && activePointers.size >= 2) {
+    e.preventDefault();
+    const pts = [...activePointers.values()];
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+    const wrap = document.getElementById('canvas-wrap');
+    wrap.scrollLeft -= mid.x - pinchStart.mid.x;
+    wrap.scrollTop  -= mid.y - pinchStart.mid.y;
+    pinchStart.mid = mid;
+    setZoom(pinchStart.zoom * (d / pinchStart.dist), pinchStart.anchor);
+    return;
+  }
+
   if (!isDragging) return;
   e.preventDefault();
   dragCurImg = toImg(e.clientX, e.clientY);
@@ -856,6 +962,8 @@ canvas.addEventListener('pointermove', e => {
 });
 
 canvas.addEventListener('pointerup', e => {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchStart = null;
   if (!isDragging) return;
   isDragging = false;
 
@@ -891,17 +999,27 @@ canvas.addEventListener('pointerup', e => {
   render(previewData);
 });
 
-canvas.addEventListener('pointercancel', () => {
+canvas.addEventListener('pointercancel', e => {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchStart = null;
   if (!isDragging) return;
   isDragging = false;
   render(previewData);
 });
 
-canvas.addEventListener('contextmenu', e => {
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+document.getElementById('btn-zoom-in').addEventListener('click',  () => setZoom(zoom * 1.5));
+document.getElementById('btn-zoom-out').addEventListener('click', () => setZoom(zoom / 1.5));
+document.getElementById('btn-zoom-fit').addEventListener('click', () => setZoom(1));
+
+document.getElementById('canvas-wrap').addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
   e.preventDefault();
-  phase = 'select'; selection = null; previewData = null;
-  render(); updateUI();
-});
+  setZoom(zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), anchorAt(e.clientX, e.clientY));
+}, { passive: false });
+
+window.addEventListener('resize', () => applyZoom());
 
 // ================================================================
 //  CONTROLS
@@ -971,7 +1089,7 @@ function updateUI() {
   if (phase === 'select') {
     phaseBadge.className = 'phase-badge select';
     phaseBadge.textContent = 'SELECT';
-    statusText.textContent = 'ドラッグで選択　·　右クリックで解除';
+    statusText.textContent = 'ドラッグで選択';
   } else {
     phaseBadge.className = 'phase-badge apply';
     phaseBadge.textContent = 'APPLY';
@@ -983,7 +1101,7 @@ function updateUI() {
       'Slide: Push':   'ドラッグで押し出す',
     };
     const hint = hints[MODES[modeIdx]] || '';
-    statusText.textContent = `${hint}　·　外側=確定　·　内側=やり直し　·　右クリック=解除`;
+    statusText.textContent = `${hint}　·　外側=確定　·　内側=やり直し`;
   }
 }
 </script>
