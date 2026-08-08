@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:x.com)",
+      "mcp__obsidian-cli__search_notes",
+      "mcp__obsidian-cli__read_note",
+      "Bash(git -C \"/Users/naoto.bando/AI関連/PixelStrech\" status)",
+      "mcp__visualize__read_me",
+      "mcp__visualize__show_widget"
+    ]
+  }
+}

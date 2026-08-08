@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Stretch</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #111;
+  color: #fff;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+#upload-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 80px;
+}
+#upload-screen h1 {
+  font-size: 2.4rem;
+  letter-spacing: 10px;
+  font-weight: 300;
+  color: #e0e0e0;
+}
+#drop-zone {
+  text-align: center;
+  cursor: pointer;
+  padding: 0;
+}
+#drop-zone .main-text {
+  font-size: 0.9rem;
+  color: #555;
+  letter-spacing: 1px;
+  transition: color 0.2s, text-decoration-color 0.2s;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 4px;
+}
+#drop-zone:hover .main-text,
+#drop-zone.over .main-text {
+  color: #e0e0e0;
+  text-decoration-color: #e0e0e0;
+}
+#drop-zone .sub-text {
+  margin-top: 12px;
+  font-size: 0.7rem;
+  color: #333;
+  letter-spacing: 1px;
+}
+#file-input { display: none; }
+
+#app-screen {
+  flex: 1;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+#canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  padding: 24px;
+  position: relative;
+}
+#canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  cursor: crosshair;
+}
+
+#status-bar {
+  background: #191919;
+  border-top: 1px solid #2a2a2a;
+  padding: 5px 16px;
+  font-size: 11px;
+  color: #555;
+  text-align: center;
+  letter-spacing: 0.5px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.phase-badge {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.phase-badge.select { background: #2a2a2a; color: #e0e0e0; }
+.phase-badge.apply  { background: #1a2a3a; color: #0cf; }
+
+#mode-bar {
+  display: flex;
+  background: #111;
+  border-top: 1px solid #252525;
+}
+.mode-btn {
+  flex: 1;
+  padding: 10px 6px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #222;
+  border-bottom: 2px solid transparent;
+  color: #555;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  transition: background 0.15s, color 0.15s, border-bottom-color 0.15s;
+  white-space: nowrap;
+}
+.mode-btn:last-child { border-right: none; }
+.mode-btn:hover { background: #1a1a1a; color: #aaa; }
+.mode-btn.active { color: #e0e0e0; border-bottom-color: #e0e0e0; }
+
+#controls {
+  display: flex;
+  background: #161616;
+  border-top: 2px solid #383838;
+}
+.ctrl-btn {
+  flex: 1;
+  padding: 14px 6px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #222;
+  color: #888;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.ctrl-btn:last-child { border-right: none; }
+.ctrl-btn:hover { background: #222; color: #fff; }
+
+#padding-ctrl {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid #222;
+  border-radius: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  opacity: 0.25;
+  transition: opacity 0.2s;
+  z-index: 10;
+  pointer-events: auto;
+}
+#padding-ctrl:hover { opacity: 1; }
+#padding-ctrl label { color: #888; cursor: default; }
+#padding-slider {
+  -webkit-appearance: none;
+  width: 80px;
+  height: 3px;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+#padding-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #e0e0e0;
+  cursor: pointer;
+}
+#padding-val { color: #666; min-width: 28px; }
+</style>
+</head>
+<body>
+
+<div id="upload-screen">
+  <h1>PIXEL STRETCH</h1>
+  <div id="drop-zone">
+    <div class="main-text">クリックまたは画像をドロップ</div>
+    <div class="sub-text">PNG / JPG / WEBP / GIF</div>
+  </div>
+  <input type="file" id="file-input" accept="image/*">
+</div>
+
+<div id="app-screen">
+  <div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="padding-ctrl">
+      <label for="padding-slider">Padding</label>
+      <input type="range" id="padding-slider" min="0" max="120" value="24" step="4">
+      <span id="padding-val">24px</span>
+    </div>
+  </div>
+  <div id="status-bar">
+    <span class="phase-badge select" id="phase-badge">SELECT</span>
+    <span id="status-text">ドラッグで選択</span>
+  </div>
+  <div id="mode-bar">
+    <button class="mode-btn active" data-mode="0">Wipe</button>
+    <button class="mode-btn"        data-mode="1">Slide: White</button>
+    <button class="mode-btn"        data-mode="2">Slide: Reveal</button>
+    <button class="mode-btn"        data-mode="3">Slide: Scroll</button>
+    <button class="mode-btn"        data-mode="4">Slide: Push</button>
+  </div>
+  <div id="controls">
+    <button class="ctrl-btn" id="btn-reset" title="1">(1) Reset</button>
+    <button class="ctrl-btn" id="btn-undo"  title="Z">Undo</button>
+    <button class="ctrl-btn" id="btn-save"  title="Enter">Save</button>
+  </div>
+</div>
+
+<script>
+// ================================================================
+//  CONFIG
+// ================================================================
+// Modes: Wipe | Slide (white fill) | Slide (reveal base image)
+const MODES = ['Wipe', 'Slide: White', 'Slide: Reveal', 'Slide: Scroll', 'Slide: Push'];
+const DIRS  = ['45°'];
+
+const SEL_COLOR = '#00ff00';
+const CUR_COLOR = '#00ccff';
+const MAX_DISP  = 1400; // max canvas side in pixels
+
+// ================================================================
+//  STATE
+// ================================================================
+let modeIdx = 0;
+let dirIdx  = 0;
+let phase   = 'select'; // 'select' | 'apply'
+
+let baseData      = null;
+let committedData = null;
+let undoStack     = [];
+
+let selection    = null; // { x, y, w, h } image coords, normalized
+let isDragging   = false;
+let dragStartImg = { x: 0, y: 0 };
+let dragCurImg   = { x: 0, y: 0 };
+let previewData  = null;
+
+// ================================================================
+//  ELEMENTS
+// ================================================================
+const uploadScreen = document.getElementById('upload-screen');
+const appScreen    = document.getElementById('app-screen');
+const dropZone     = document.getElementById('drop-zone');
+const fileInput    = document.getElementById('file-input');
+const canvas       = document.getElementById('canvas');
+const ctx          = canvas.getContext('2d', { willReadFrequently: true });
+const statusText   = document.getElementById('status-text');
+const phaseBadge   = document.getElementById('phase-badge');
+const modeBtns     = document.querySelectorAll('.mode-btn');
+const btnReset     = document.getElementById('btn-reset');
+const btnUndo      = document.getElementById('btn-undo');
+const btnSave      = document.getElementById('btn-save');
+
+// ================================================================
+//  IMAGE LOADING
+// ================================================================
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const ratio = Math.min(1, MAX_DISP / img.naturalWidth, MAX_DISP / img.naturalHeight);
+    canvas.width  = Math.round(img.naturalWidth  * ratio);
+    canvas.height = Math.round(img.naturalHeight * ratio);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    baseData      = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    committedData = cloneID(baseData);
+    undoStack = []; selection = null; phase = 'select'; previewData = null;
+    URL.revokeObjectURL(url);
+    uploadScreen.style.display = 'none';
+    appScreen.style.display    = 'flex';
+    updateUI(); render();
+  };
+  img.src = url;
+}
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+document.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
+document.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+document.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('over');
+  if (uploadScreen.style.display !== 'none') loadFile(e.dataTransfer.files[0]);
+});
+
+// ================================================================
+//  HELPERS
+// ================================================================
+function cloneID(id) {
+  return new ImageData(new Uint8ClampedArray(id.data), id.width, id.height);
+}
+
+function toImg(clientX, clientY) {
+  const r  = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((clientX - r.left) * canvas.width  / r.width),
+    y: Math.round((clientY - r.top)  * canvas.height / r.height),
+  };
+}
+
+function normRect(x1, y1, x2, y2) {
+  const x = Math.max(0, Math.min(x1, x2));
+  const y = Math.max(0, Math.min(y1, y2));
+  const w = Math.min(canvas.width,  Math.max(x1, x2)) - x;
+  const h = Math.min(canvas.height, Math.max(y1, y2)) - y;
+  return { x, y, w, h };
+}
+
+// Constrain raw drag vector by current direction setting.
+// Returns { dx, dy } in image-pixel units.
+function constrainDrag(rawDx, rawDy) {
+  const d = DIRS[dirIdx];
+  if (d === 'X') return { dx: rawDx, dy: 0 };
+  if (d === 'Y') return { dx: 0, dy: rawDy };
+  // 45°: snap to nearest 45° angle (0°, 45°, 90°, 135°, …)
+  const len   = Math.sqrt(rawDx * rawDx + rawDy * rawDy);
+  const angle = Math.atan2(rawDy, rawDx);
+  const snap  = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+  return {
+    dx: Math.round(len * Math.cos(snap)),
+    dy: Math.round(len * Math.sin(snap)),
+  };
+}
+
+// ================================================================
+//  EFFECT: WIPE
+//
+//  Dir X:   standard horizontal smear (right/left edge repeated)
+//  Dir Y:   standard vertical   smear (bottom/top  edge repeated)
+//  Dir 45°: true diagonal smear using TWO trailing edges
+//
+//  Diagonal rule for drag direction (sdx, sdy):
+//    going right  (sdx > 0) → use LEFT  edge  as vertical   source
+//    going left   (sdx < 0) → use RIGHT edge  as vertical   source
+//    going down   (sdy > 0) → use TOP   edge  as horizontal source
+//    going up     (sdy < 0) → use BOTTOM edge as horizontal source
+//
+//  Each source pixel at (edgeX, r) or (c, edgeY) emits a diagonal ray
+//  of length `dist` steps in the (sdx, sdy) direction.
+// ================================================================
+function computeWipe(rawDx, rawDy) {
+  if (!selection || (rawDx === 0 && rawDy === 0)) return cloneID(committedData);
+
+  const { dx, dy } = constrainDrag(rawDx, rawDy);
+  if (dx === 0 && dy === 0) return cloneID(committedData);
+
+  const result = cloneID(committedData);
+  const dst    = result.data;
+  const src    = committedData.data;
+  const W = result.width, H = result.height;
+  const { x, y, w, h } = selection;
+
+  const sdx = Math.sign(dx), sdy = Math.sign(dy);
+
+  // ── diagonal wipe (both dx and dy nonzero after snap) ──────────
+  if (dx !== 0 && dy !== 0) {
+    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+
+    // Horizontal trailing edge (top if going down, bottom if going up)
+    const edgeY  = sdy > 0 ? y : y + h - 1;
+    const clampY = Math.max(0, Math.min(H - 1, edgeY));
+    for (let col = x; col < x + w; col++) {
+      if (col < 0 || col >= W) continue;
+      const si = (clampY * W + col) * 4;
+      const R = src[si], G = src[si+1], B = src[si+2], A = src[si+3];
+      for (let t = 1; t <= dist; t++) {
+        const dc = col   + sdx * t;
+        const dr = edgeY + sdy * t;
+        if (dc < 0 || dc >= W || dr < 0 || dr >= H) break;
+        const di = (dr * W + dc) * 4;
+        dst[di]=R; dst[di+1]=G; dst[di+2]=B; dst[di+3]=A;
+      }
+    }
+
+    // Vertical trailing edge (left if going right, right if going left)
+    const edgeX  = sdx > 0 ? x : x + w - 1;
+    const clampX = Math.max(0, Math.min(W - 1, edgeX));
+    for (let row = y; row < y + h; row++) {
+      if (row < 0 || row >= H) continue;
+      const si = (row * W + clampX) * 4;
+      const R = src[si], G = src[si+1], B = src[si+2], A = src[si+3];
+      for (let t = 1; t <= dist; t++) {
+        const dc = edgeX + sdx * t;
+        const dr = row   + sdy * t;
+        if (dc < 0 || dc >= W || dr < 0 || dr >= H) break;
+        const di = (dr * W + dc) * 4;
+        dst[di]=R; dst[di+1]=G; dst[di+2]=B; dst[di+3]=A;
+      }
+    }
+    return result;
+  }
+
+  // ── horizontal wipe (dx only) ──────────────────────────────────
+  if (dx !== 0) {
+    const edgeX  = sdx > 0 ? x : x + w - 1;
+    const clampX = Math.max(0, Math.min(W - 1, edgeX));
+    const dist   = Math.abs(dx);
+    const y1 = Math.max(0, y), y2 = Math.min(H, y + h);
+    for (let row = y1; row < y2; row++) {
+      const si = (row * W + clampX) * 4;
+      const R = src[si], G = src[si+1], B = src[si+2], A = src[si+3];
+      for (let t = 1; t <= dist; t++) {
+        const col = edgeX + sdx * t;
+        if (col < 0 || col >= W) break;
+        const di = (row * W + col) * 4;
+        dst[di]=R; dst[di+1]=G; dst[di+2]=B; dst[di+3]=A;
+      }
+    }
+    return result;
+  }
+
+  // ── vertical wipe (dy only) ────────────────────────────────────
+  if (dy !== 0) {
+    const edgeY  = sdy > 0 ? y : y + h - 1;
+    const clampY = Math.max(0, Math.min(H - 1, edgeY));
+    const dist   = Math.abs(dy);
+    const x1 = Math.max(0, x), x2 = Math.min(W, x + w);
+    for (let col = x1; col < x2; col++) {
+      const si = (clampY * W + col) * 4;
+      const R = src[si], G = src[si+1], B = src[si+2], A = src[si+3];
+      for (let t = 1; t <= dist; t++) {
+        const row = edgeY + sdy * t;
+        if (row < 0 || row >= H) break;
+        const di = (row * W + col) * 4;
+        dst[di]=R; dst[di+1]=G; dst[di+2]=B; dst[di+3]=A;
+      }
+    }
+  }
+  return result;
+}
+
+// ================================================================
+//  EFFECT: SLIDE
+//
+//  Slide: White  – vacated area filled with white
+//  Slide: Reveal – vacated area filled from baseData (original photo)
+// ================================================================
+function computeSlide(rawDx, rawDy) {
+  if (!selection || (rawDx === 0 && rawDy === 0)) return cloneID(committedData);
+
+  const { dx, dy } = constrainDrag(rawDx, rawDy);
+  const ndx = Math.round(dx), ndy = Math.round(dy);
+
+  const isReveal = MODES[modeIdx] === 'Slide: Reveal';
+  const result   = cloneID(committedData);
+  const dst      = result.data;
+  const src      = committedData.data;
+  const base     = baseData.data;
+  const W = result.width, H = result.height;
+  const { x, y, w, h } = selection;
+
+  // Extract selection pixels (from committed state)
+  const region = new Uint8ClampedArray(w * h * 4);
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < w; col++) {
+      const sr = y + row, sc = x + col;
+      if (sr < 0 || sr >= H || sc < 0 || sc >= W) continue;
+      const si = (sr * W + sc) * 4;
+      const di = (row * w + col) * 4;
+      region[di]=src[si]; region[di+1]=src[si+1];
+      region[di+2]=src[si+2]; region[di+3]=src[si+3];
+    }
+  }
+
+  // Fill vacated area
+  for (let row = Math.max(0, y); row < Math.min(y + h, H); row++) {
+    for (let col = Math.max(0, x); col < Math.min(x + w, W); col++) {
+      const di = (row * W + col) * 4;
+      if (isReveal) {
+        // Show original base image at this position
+        dst[di]  =base[di]; dst[di+1]=base[di+1];
+        dst[di+2]=base[di+2]; dst[di+3]=base[di+3];
+      } else {
+        dst[di]=255; dst[di+1]=255; dst[di+2]=255; dst[di+3]=255;
+      }
+    }
+  }
+
+  // Paste selection at destination
+  const nx = x + ndx, ny = y + ndy;
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < w; col++) {
+      const dr = ny + row, dc = nx + col;
+      if (dr < 0 || dr >= H || dc < 0 || dc >= W) continue;
+      const si = (row * w + col) * 4;
+      const di = (dr * W + dc) * 4;
+      dst[di]=region[si]; dst[di+1]=region[si+1];
+      dst[di+2]=region[si+2]; dst[di+3]=region[si+3];
+    }
+  }
+
+  return result;
+}
+
+// ================================================================
+//  EFFECT: SLIDE: SCROLL (A)
+//
+//  選択矩形はビューポート。その中でcommittedImageを(dx,dy)ぶんスクロールして表示。
+//  選択外: 変化なし。 スクロール先が画像外: 元のコミット済みピクセルをそのまま残す。
+// ================================================================
+function computeSlideScroll(rawDx, rawDy) {
+  if (!selection || (rawDx === 0 && rawDy === 0)) return cloneID(committedData);
+
+  const { dx, dy } = constrainDrag(rawDx, rawDy);
+  const ndx = Math.round(dx), ndy = Math.round(dy);
+  if (ndx === 0 && ndy === 0) return cloneID(committedData);
+
+  const result = cloneID(committedData);
+  const dst = result.data;
+  const src = committedData.data;
+  const W = result.width, H = result.height;
+  const { x, y, w, h } = selection;
+
+  for (let row = Math.max(0, y); row < Math.min(y + h, H); row++) {
+    for (let col = Math.max(0, x); col < Math.min(x + w, W); col++) {
+      // モジュロ折り返し: 端を超えたら逆端からループ
+      const srcCol = ((col + ndx) % W + W) % W;
+      const srcRow = ((row + ndy) % H + H) % H;
+      const di = (row    * W + col)    * 4;
+      const si = (srcRow * W + srcCol) * 4;
+      dst[di]=src[si]; dst[di+1]=src[si+1];
+      dst[di+2]=src[si+2]; dst[di+3]=src[si+3];
+    }
+  }
+  return result;
+}
+
+// ================================================================
+//  EFFECT: SLIDE: PUSH (B)
+//
+//  選択内コンテンツのコピーを選択矩形内で(dx,dy)ぶんスライドさせる。
+//  コピーが届かない部分(選択矩形の端)は元のコミット済みピクセルが透けて見える。
+// ================================================================
+function computeSlidePush(rawDx, rawDy) {
+  if (!selection || (rawDx === 0 && rawDy === 0)) return cloneID(committedData);
+
+  const { dx, dy } = constrainDrag(rawDx, rawDy);
+  const ndx = Math.round(dx), ndy = Math.round(dy);
+  if (ndx === 0 && ndy === 0) return cloneID(committedData);
+
+  const result = cloneID(committedData);
+  const dst = result.data;
+  const src = committedData.data;
+  const W = result.width, H = result.height;
+  const { x, y, w, h } = selection;
+
+  // 選択内容を先に退避
+  const snap = new Uint8ClampedArray(w * h * 4);
+  for (let row = 0; row < h; row++) {
+    for (let col = 0; col < w; col++) {
+      const sr = y + row, sc = x + col;
+      if (sr < 0 || sr >= H || sc < 0 || sc >= W) continue;
+      const si = (sr * W + sc) * 4;
+      const di = (row * w + col) * 4;
+      snap[di]=src[si]; snap[di+1]=src[si+1];
+      snap[di+2]=src[si+2]; snap[di+3]=src[si+3];
+    }
+  }
+
+  // ずらしたコピーを選択矩形内にクリップして描画
+  // ピクセル(px,py)にある「ずれたコピー」のソースは選択内座標(lx-ndx, ly-ndy)
+  for (let row = Math.max(0, y); row < Math.min(y + h, H); row++) {
+    for (let col = Math.max(0, x); col < Math.min(x + w, W); col++) {
+      const lx = col - x - ndx; // コピーのどこを参照するか
+      const ly = row - y - ndy;
+      if (lx < 0 || lx >= w || ly < 0 || ly >= h) continue; // 届かない部分は元のまま
+      const si = (ly * w + lx) * 4;
+      const di = (row * W + col) * 4;
+      dst[di]=snap[si]; dst[di+1]=snap[si+1];
+      dst[di+2]=snap[si+2]; dst[di+3]=snap[si+3];
+    }
+  }
+  return result;
+}
+
+// ================================================================
+//  RENDER
+// ================================================================
+function render(displayData) {
+  if (!committedData) return;
+  ctx.putImageData(displayData || committedData, 0, 0);
+  drawOverlay();
+}
+
+function drawOverlay() {
+  const W = canvas.width;
+  const lw = Math.max(1.5, W / 600);
+
+  ctx.save();
+  ctx.lineWidth = lw;
+  ctx.setLineDash([lw * 4, lw * 2]);
+
+  // Selection rectangle
+  const selDraw = selection ||
+    (isDragging && phase === 'select'
+      ? normRect(dragStartImg.x, dragStartImg.y, dragCurImg.x, dragCurImg.y)
+      : null);
+
+  if (selDraw && selDraw.w > 0 && selDraw.h > 0) {
+    ctx.strokeStyle = SEL_COLOR;
+    ctx.strokeRect(selDraw.x, selDraw.y, selDraw.w, selDraw.h);
+  }
+
+  // Drag arrow + cursor dot (apply phase only)
+  if (isDragging && phase === 'apply') {
+    ctx.setLineDash([lw * 3, lw * 2]);
+    ctx.strokeStyle = CUR_COLOR;
+    ctx.beginPath();
+    ctx.moveTo(dragStartImg.x, dragStartImg.y);
+    ctx.lineTo(dragCurImg.x, dragCurImg.y);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.fillStyle = CUR_COLOR;
+    ctx.beginPath();
+    ctx.arc(dragCurImg.x, dragCurImg.y, lw * 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ================================================================
+//  MOUSE / TOUCH
+// ================================================================
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  canvas.setPointerCapture(e.pointerId); // 画面外でも追跡
+  isDragging   = true;
+  dragStartImg = toImg(e.clientX, e.clientY);
+  dragCurImg   = { ...dragStartImg };
+  previewData  = null;
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!isDragging) return;
+  dragCurImg = toImg(e.clientX, e.clientY);
+
+  if (phase === 'select') { render(); return; }
+
+  const rawDx = dragCurImg.x - dragStartImg.x;
+  const rawDy = dragCurImg.y - dragStartImg.y;
+  const mode  = MODES[modeIdx];
+  if      (mode === 'Wipe')          previewData = computeWipe(rawDx, rawDy);
+  else if (mode === 'Slide: Scroll') previewData = computeSlideScroll(rawDx, rawDy);
+  else if (mode === 'Slide: Push')   previewData = computeSlidePush(rawDx, rawDy);
+  else                               previewData = computeSlide(rawDx, rawDy);
+  render(previewData);
+});
+
+canvas.addEventListener('pointerup', e => {
+  if (!isDragging) return;
+  isDragging = false;
+
+  if (phase === 'select') {
+    const r = normRect(dragStartImg.x, dragStartImg.y, dragCurImg.x, dragCurImg.y);
+    if (r.w > 4 && r.h > 4) { selection = r; phase = 'apply'; }
+    render(); updateUI();
+    return;
+  }
+
+  if (previewData) {
+    undoStack.push(cloneID(committedData));
+    if (undoStack.length > 20) undoStack.shift();
+    committedData = previewData;
+    previewData   = null;
+  }
+  render();
+});
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  phase = 'select'; selection = null; previewData = null;
+  render(); updateUI();
+});
+
+// ================================================================
+//  CONTROLS
+// ================================================================
+btnReset.addEventListener('click', () => {
+  if (!baseData) return;
+  undoStack.push(cloneID(committedData));
+  committedData = cloneID(baseData);
+  selection = null; phase = 'select'; previewData = null;
+  render(); updateUI();
+});
+
+modeBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    modeIdx = parseInt(btn.dataset.mode);
+    modeBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    updateUI();
+  });
+});
+
+
+btnUndo.addEventListener('click', () => {
+  if (undoStack.length === 0) return;
+  committedData = undoStack.pop();
+  selection = null; phase = 'select'; previewData = null;
+  render(); updateUI();
+});
+
+const paddingSlider = document.getElementById('padding-slider');
+const paddingVal    = document.getElementById('padding-val');
+const canvasWrap    = document.getElementById('canvas-wrap');
+paddingSlider.addEventListener('input', () => {
+  const v = paddingSlider.value;
+  canvasWrap.style.padding = v + 'px';
+  paddingVal.textContent   = v + 'px';
+});
+
+btnSave.addEventListener('click', () => {
+  ctx.putImageData(committedData, 0, 0);
+  const a = document.createElement('a');
+  a.download = `pixel-stretch-${Date.now()}.png`;
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+  render();
+});
+
+document.addEventListener('keydown', e => {
+  if (!committedData) return;
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
+  switch (e.key) {
+    case '1':           btnReset.click(); break;
+
+
+    case 'z': case 'Z': btnUndo.click();  break;
+    case 'Enter':       btnSave.click();  break;
+    case 'Escape':
+      phase = 'select'; selection = null; previewData = null;
+      render(); updateUI(); break;
+  }
+});
+
+// ================================================================
+//  UI
+// ================================================================
+function updateUI() {
+  if (phase === 'select') {
+    phaseBadge.className = 'phase-badge select';
+    phaseBadge.textContent = 'SELECT';
+    statusText.textContent = 'ドラッグで選択　·　右クリックで解除';
+  } else {
+    phaseBadge.className = 'phase-badge apply';
+    phaseBadge.textContent = 'APPLY';
+    const hints = {
+      'Wipe':          'ドラッグで引き伸ばす',
+      'Slide: White':  'ドラッグでスライド（白）',
+      'Slide: Reveal': 'ドラッグでスライド（露出）',
+      'Slide: Scroll': 'ドラッグでスクロール',
+      'Slide: Push':   'ドラッグで押し出す',
+    };
+    const hint = hints[MODES[modeIdx]] || '';
+    statusText.textContent = `${hint}　·　右クリックで再選択`;
+  }
+}
+</script>
+</body>
+</html>
