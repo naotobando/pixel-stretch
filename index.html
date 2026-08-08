@@ -371,6 +371,7 @@ let undoStack     = [];
 let selection    = null; // { x, y, w, h } image coords, normalized
 let isDragging   = false;
 let isTouch      = false;
+let dragFromOutside = false;
 let dragStartImg = { x: 0, y: 0 };
 let dragCurImg   = { x: 0, y: 0 };
 let previewData  = null;
@@ -824,8 +825,17 @@ canvas.addEventListener('pointerdown', e => {
   isDragging   = true;
   dragStartImg = toImg(e.clientX, e.clientY);
   dragCurImg   = { ...dragStartImg };
+  dragFromOutside = phase === 'apply' && !inSelection(dragStartImg);
   if (phase === 'select') previewData = null;
 });
+
+// A small margin keeps edge-of-rect grabs on the "inside" side.
+function inSelection(p) {
+  if (!selection) return false;
+  const m = Math.max(6, Math.min(selection.w, selection.h) * 0.08);
+  return p.x >= selection.x - m && p.x <= selection.x + selection.w + m &&
+         p.y >= selection.y - m && p.y <= selection.y + selection.h + m;
+}
 
 canvas.addEventListener('pointermove', e => {
   if (!isDragging) return;
@@ -833,6 +843,7 @@ canvas.addEventListener('pointermove', e => {
   dragCurImg = toImg(e.clientX, e.clientY);
 
   if (phase === 'select') { render(); return; }
+  if (dragFromOutside) return; // commit gesture — ignore stray movement
 
   const rawDx = dragCurImg.x - dragStartImg.x;
   const rawDy = dragCurImg.y - dragStartImg.y;
@@ -855,21 +866,10 @@ canvas.addEventListener('pointerup', e => {
     return;
   }
 
-  // apply phase: tap (no drag) decides commit/retry, real drag keeps preview pending
-  const moved = Math.hypot(dragCurImg.x - dragStartImg.x, dragCurImg.y - dragStartImg.y);
-  const insideSelection = selection && (
-    dragStartImg.x >= selection.x && dragStartImg.x <= selection.x + selection.w &&
-    dragStartImg.y >= selection.y && dragStartImg.y <= selection.y + selection.h
-  );
-
-  if (moved < (isTouch ? 12 : 5)) {
-    if (insideSelection) {
-      // retry: discard pending preview, stay selected
-      previewData = null;
-      render(); updateUI();
-      return;
-    }
-    // tap outside: commit pending edit (if any) and clear selection
+  // apply phase: where the gesture STARTED decides what it means.
+  // outside the selection → commit (any stray movement is ignored)
+  // inside → drag = stretch (stays pending), tap = discard the pending stretch
+  if (dragFromOutside) {
     if (previewData) {
       undoStack.push(cloneID(committedData));
       if (undoStack.length > 20) undoStack.shift();
@@ -877,6 +877,13 @@ canvas.addEventListener('pointerup', e => {
       previewData   = null;
     }
     selection = null; phase = 'select';
+    render(); updateUI();
+    return;
+  }
+
+  const moved = Math.hypot(dragCurImg.x - dragStartImg.x, dragCurImg.y - dragStartImg.y);
+  if (moved < (isTouch ? 12 : 5)) {
+    previewData = null; // retry: discard pending stretch, keep the selection
     render(); updateUI();
     return;
   }
