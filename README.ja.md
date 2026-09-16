@@ -6,7 +6,7 @@
 
 **[→ ツールを開く](https://pixel-stretch-gilt.vercel.app/)** — インストール不要、登録不要。
 
-![PIXEL STRETCH](ogp.png)
+![PIXEL STRETCH デモ](demo.gif)
 
 ---
 

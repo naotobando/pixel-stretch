@@ -6,7 +6,7 @@
 
 **[→ Open the tool](https://pixel-stretch-gilt.vercel.app/)** — no install, no sign-up.
 
-![PIXEL STRETCH](ogp.png)
+![PIXEL STRETCH demo](demo.gif)
 
 ---
 
