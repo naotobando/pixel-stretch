@@ -350,7 +350,7 @@ body.dragging #drop-overlay { display: flex; }
 }
 .rec-badge.on   { background: rgba(255, 77, 77, 0.16); color: #ff6b6b; }
 .rec-badge.full { background: rgba(255, 196, 0, 0.16); color: #ffc400; }
-#frame-interval, #ascii-style, #ascii-rate {
+#play-style, #frame-interval, #ascii-style, #ascii-rate {
   background: #1e1e1e;
   color: #aaa;
   border: 1px solid #2c2c2c;
@@ -364,6 +364,7 @@ body.playing #canvas { cursor: default; }
 body.playing .tb-modes,
 body.playing .tb-zoom,
 body.playing .tb-actions,
+body.playing #play-style,
 body.playing #frame-interval,
 body.playing #ascii-style,
 body.playing #ascii-rate { opacity: 0.3; pointer-events: none; }
@@ -431,12 +432,17 @@ body.playing #ascii-rate { opacity: 0.3; pointer-events: none; }
     <div class="tb-divider"></div>
     <div class="tb-group tb-rec">
       <span class="rec-badge" id="rec-badge" title="確定するたびに自動で記録（最大100回）">REC 0/100</span>
-      <select id="frame-interval" title="コマ送りの間隔">
+      <select id="play-style" title="見せ方：コマ送り（確定ごとの画像を切り替える）／ぬるっと（1回ごとの引き伸ばしを動きで再現する）">
+        <option value="frames" selected>コマ送り</option>
+        <option value="smooth">ぬるっと</option>
+      </select>
+      <select id="frame-interval" title="1回の加工にかける時間">
         <option value="150">0.15s</option>
         <option value="300" selected>0.3s</option>
         <option value="600">0.6s</option>
       </select>
-      <button class="ctrl-btn" id="btn-play-frames" title="記録をコマ送りで再生 (P)"><i class="ti ti-player-play"></i><span>Frames</span></button>
+      <button class="ctrl-btn" id="btn-play-frames" title="記録を再生 (P)"><i class="ti ti-player-play"></i><span>Play</span></button>
+      <button class="ctrl-btn" id="btn-export" title="今の見せ方で再生しながら WebM 動画に書き出す (E)"><i class="ti ti-movie"></i><span>WebM</span></button>
     </div>
     <div class="tb-divider"></div>
     <div class="tb-group tb-actions">
@@ -492,6 +498,9 @@ const MAX_REC = 100;
 let frames    = [];
 let isPlaying = false;
 let playTimer = null;
+let playWake  = null;   // 待ち時間中に Stop されたら、すぐ起こすため
+let exporting = false;  // WebM に書き出し中か
+let lastExport = null;  // 直近に書き出した WebM（確認用）
 
 // ================================================================
 //  ELEMENTS
@@ -737,18 +746,53 @@ function updateRecUI() {
   recBadge.textContent = `REC ${n}/${MAX_REC}`;
   recBadge.className = 'rec-badge' + (n >= MAX_REC ? ' full' : n > 0 ? ' on' : '');
   btnPlayFrames.disabled = n === 0 && !isPlaying;
+  document.getElementById('btn-export').disabled = n === 0 || isPlaying || exporting;
 }
 
 // ================================================================
 //  phase2: FRAMES（コマ送り再生）
 // ================================================================
+// ================================================================
+//  phase2: PLAYBACK（コマ送り／ぬるっと再現）と WebM 書き出し
+//  コマ送り：確定ごとの画像を一定の間隔で切り替える。
+//  ぬるっと：1回ごとに、1つ前の画像へ同じ加工を「0 → 記録した引き伸ばし量」まで
+//            少しずつかけ直して描き、最後に記録した画像を出す（ASCII は最後に文字になる）。
+// ================================================================
+const playStyle = document.getElementById('play-style');
+const btnExport = document.getElementById('btn-export');
+
+// 待つ。Stop されたら途中で起きる
+function playWait(ms) {
+  return new Promise(resolve => {
+    playWake = resolve;
+    playTimer = setTimeout(resolve, Math.max(0, ms));
+  });
+}
+
+function easeInOut(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+
+function bitmapToID(bm) {
+  const c = document.createElement('canvas');
+  c.width = bm.width; c.height = bm.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(bm, 0, 0);
+  return g.getImageData(0, 0, c.width, c.height);
+}
+
+function drawBitmap(bm) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height); // 透明な余白に前のコマが残らないように
+  ctx.drawImage(bm, 0, 0);
+}
+
+// 記録を再生する。最後まで再生したら true、途中で止めたら false を返す
 async function playFrames() {
-  if (isPlaying) { stopFrames(); return; }
-  if (frames.length < 2) return;
+  if (isPlaying) { stopFrames(); return false; }
+  if (frames.length < 2) return false;
   // エンコードが終わっていないコマがあれば少し待つ
   for (let i = 0; i < 20 && frames.some(f => !f.blob); i++) await new Promise(r => setTimeout(r, 50));
-  const bitmaps = await Promise.all(frames.filter(f => f.blob).map(f => createImageBitmap(f.blob)));
-  if (bitmaps.length < 2) return;
+  const rec = frames.filter(f => f.blob);
+  const bitmaps = await Promise.all(rec.map(f => createImageBitmap(f.blob)));
+  if (bitmaps.length < 2) return false;
 
   isPlaying = true;
   document.body.classList.add('playing');
@@ -756,33 +800,110 @@ async function playFrames() {
   btnPlayFrames.querySelector('i').className = 'ti ti-player-stop';
   btnPlayFrames.querySelector('span').textContent = 'Stop';
   phaseBadge.className = 'phase-badge apply';
-  phaseBadge.textContent = 'PLAY';
+  phaseBadge.textContent = exporting ? 'EXPORT' : 'PLAY';
+  updateRecUI();
 
+  const style    = playStyle.value;
   const interval = parseInt(frameInterval.value, 10);
-  let i = 0;
-  const step = () => {
-    if (!isPlaying) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height); // 透明な余白に前のコマが残らないように
-    ctx.drawImage(bitmaps[i], 0, 0);
-    statusText.textContent = `コマ送り ${i}/${bitmaps.length - 1}${i === 0 ? '（開始）' : ''}　·　Esc / Stop で終了`;
-    i++;
+  const label    = style === 'smooth' ? 'ぬるっと' : 'コマ送り';
+  const last     = bitmaps.length - 1;
+  const savedMode = modeIdx;
+  let done = false;
+  try {
+    let clock = performance.now();
+    const holdUntil = async ms => { clock += ms; await playWait(clock - performance.now()); };
+    const show = i => {
+      statusText.textContent = `${exporting ? '書き出し中　·　' : ''}${label} ${i}/${last}${i === 0 ? '（開始）' : ''}　·　Esc / Stop で終了`;
+    };
+
+    drawBitmap(bitmaps[0]); show(0);
+    await holdUntil(interval);
+    for (let i = 1; i <= last && isPlaying; i++) {
+      const op = rec[i].op;
+      show(i);
+      if (style === 'smooth' && op.type === 'stretch' && (op.dx || op.dy)) {
+        // 1つ前の画像に、同じモード・同じ選択範囲で、引き伸ばし量を少しずつ増やしてかける
+        const prev  = bitmapToID(bitmaps[i - 1]);
+        const steps = Math.max(4, Math.round(interval / 35));
+        modeIdx   = Math.max(0, MODES.indexOf(op.mode));
+        selection = op.selection;
+        for (let k = 1; k < steps && isPlaying; k++) {
+          const e = easeInOut(k / steps);
+          ctx.putImageData(computeOn(prev, baseData, { dx: op.dx * e, dy: op.dy * e }), 0, 0);
+          await holdUntil(interval / steps);
+        }
+        selection = null;
+        if (!isPlaying) break;
+        drawBitmap(bitmaps[i]);
+        await holdUntil(interval / steps + interval * 0.25); // 1回ごとに、ほんの少し止める
+      } else {
+        drawBitmap(bitmaps[i]);
+        await holdUntil(interval);
+      }
+    }
     // 最後のコマは少し長めに見せてから戻る
-    playTimer = setTimeout(i < bitmaps.length ? step : () => stopFrames(), i < bitmaps.length ? interval : Math.max(1000, interval * 3));
-  };
-  step();
+    if (isPlaying) await holdUntil(Math.max(1000, interval * 3));
+    done = isPlaying;
+  } finally {
+    modeIdx = savedMode; selection = null;
+    stopFrames();
+  }
+  return done;
 }
 
 function stopFrames() {
   if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+  if (playWake) { const w = playWake; playWake = null; w(); }
   if (!isPlaying) return;
   isPlaying = false;
   document.body.classList.remove('playing');
   btnPlayFrames.querySelector('i').className = 'ti ti-player-play';
-  btnPlayFrames.querySelector('span').textContent = 'Frames';
+  btnPlayFrames.querySelector('span').textContent = 'Play';
   render(); updateUI(); updateRecUI();
 }
 
-btnPlayFrames.addEventListener('click', playFrames);
+// 今の見せ方で再生しながら、キャンバスを WebM に録る。最後まで再生できたらダウンロードする
+async function exportWebM() {
+  if (isPlaying || exporting || frames.length < 2) return null;
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+    .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  if (!mime) { statusText.textContent = 'このブラウザは WebM の書き出しに対応していません'; return null; }
+
+  exporting = true;
+  const stream   = canvas.captureStream(30);
+  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  const chunks = [];
+  recorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(r => { recorder.onstop = r; });
+  // 画面が止まっている間もコマが出るように、1画素だけ描き直し続ける
+  const keepAlive = setInterval(() => { ctx.putImageData(ctx.getImageData(0, 0, 1, 1), 0, 0); }, 40);
+  let completed = false;
+  try {
+    recorder.start(250);
+    completed = await playFrames();
+  } finally {
+    clearInterval(keepAlive);
+    if (recorder.state !== 'inactive') recorder.stop();
+    await stopped;
+    stream.getTracks().forEach(t => t.stop());
+    exporting = false;
+    updateRecUI();
+  }
+  if (!completed) { statusText.textContent = '書き出しを中止しました'; return null; }
+
+  const blob = new Blob(chunks, { type: 'video/webm' });
+  lastExport = blob;
+  const a = document.createElement('a');
+  a.download = `pixel-stretch-${playStyle.value}-${Date.now()}.webm`;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  statusText.textContent = `WebM を書き出しました（${(blob.size / 1024 / 1024).toFixed(1)}MB）`;
+  return blob;
+}
+
+btnPlayFrames.addEventListener('click', () => { if (isPlaying) stopFrames(); else if (!exporting) playFrames(); });
+btnExport.addEventListener('click', exportWebM);
 
 function toImg(clientX, clientY) {
   const r  = canvas.getBoundingClientRect();
@@ -1426,12 +1547,13 @@ btnSave.addEventListener('click', () => {
 document.addEventListener('keydown', e => {
   if (!committedData) return;
   if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
-  if (isPlaying) { // コマ送り中は Esc / P で止めるだけ
+  if (isPlaying) { // 再生中・書き出し中は Esc / P で止めるだけ
     if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') stopFrames();
     return;
   }
   switch (e.key) {
     case 'p': case 'P': playFrames(); break;
+    case 'e': case 'E': exportWebM(); break;
     case 'm': case 'M': btnMargin.click(); break;
     case '1':           btnReset.click(); break;
 
