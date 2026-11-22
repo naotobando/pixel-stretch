@@ -350,7 +350,7 @@ body.dragging #drop-overlay { display: flex; }
 }
 .rec-badge.on   { background: rgba(255, 77, 77, 0.16); color: #ff6b6b; }
 .rec-badge.full { background: rgba(255, 196, 0, 0.16); color: #ffc400; }
-#frame-interval {
+#frame-interval, #ascii-style {
   background: #1e1e1e;
   color: #aaa;
   border: 1px solid #2c2c2c;
@@ -364,7 +364,9 @@ body.playing #canvas { cursor: default; }
 body.playing .tb-modes,
 body.playing .tb-zoom,
 body.playing .tb-actions,
-body.playing #frame-interval { opacity: 0.3; pointer-events: none; }
+body.playing #frame-interval,
+body.playing #ascii-style { opacity: 0.3; pointer-events: none; }
+.tb-ascii { flex: 0 0 auto; padding: 0 var(--sp-2); }
 </style>
 </head>
 <body>
@@ -398,10 +400,18 @@ body.playing #frame-interval { opacity: 0.3; pointer-events: none; }
     <div class="tb-divider"></div>
     <div class="tb-group tb-modes">
       <button class="mode-btn active" data-mode="0" title="Wipe"><i class="ti ti-arrows-diagonal"></i><span>Wipe</span></button>
-      <button class="mode-btn"        data-mode="1" title="Slide: White"><i class="ti ti-brightness-up"></i><span>White</span></button>
+      <button class="mode-btn"        data-mode="1" title="Slide: Blue（ブルースクリーンの青で埋める）"><i class="ti ti-device-desktop-x"></i><span>Blue</span></button>
       <button class="mode-btn"        data-mode="2" title="Slide: Reveal"><i class="ti ti-eye"></i><span>Reveal</span></button>
       <button class="mode-btn"        data-mode="3" title="Slide: Scroll"><i class="ti ti-arrows-horizontal"></i><span>Scroll</span></button>
       <button class="mode-btn"        data-mode="4" title="Slide: Push"><i class="ti ti-arrow-bar-right"></i><span>Push</span></button>
+    </div>
+    <div class="tb-group tb-ascii">
+      <select id="ascii-style" title="Wipe・Scroll・Push で加工した部分を ASCII アートにする">
+        <option value="off" selected>ASCII: Off</option>
+        <option value="color">ASCII: Color</option>
+        <option value="mono">ASCII: Mono</option>
+        <option value="bsod">ASCII: BSOD</option>
+      </select>
     </div>
     <div class="tb-divider"></div>
     <div class="tb-group tb-zoom">
@@ -435,7 +445,8 @@ body.playing #frame-interval { opacity: 0.3; pointer-events: none; }
 //  CONFIG
 // ================================================================
 // Modes: Wipe | Slide (white fill) | Slide (reveal base image)
-const MODES = ['Wipe', 'Slide: White', 'Slide: Reveal', 'Slide: Scroll', 'Slide: Push'];
+const MODES = ['Wipe', 'Slide: Blue', 'Slide: Reveal', 'Slide: Scroll', 'Slide: Push'];
+const BSOD_BLUE = [0x00, 0x00, 0xAA]; // Windows 95〜XP のブルースクリーンの青
 const DIRS  = ['45°'];
 
 const SEL_COLOR = '#3d8bfd';
@@ -513,6 +524,9 @@ function layoutImage(img) {
   ctx.drawImage(img, Math.round((canvas.width - iw) / 2), Math.round((canvas.height - ih) / 2), iw, ih);
   baseData      = ctx.getImageData(0, 0, canvas.width, canvas.height);
   committedData = cloneID(baseData);
+  pixelData     = cloneID(baseData);
+  blankMask     = new ImageData(canvas.width, canvas.height);
+  asciiMask     = cloneID(blankMask);
   undoStack = []; selection = null; phase = 'select'; previewData = null;
   canvas.classList.toggle('has-margin', marginOn);
   resetRecording(baseData);
@@ -562,6 +576,103 @@ loadDemo();
 // ================================================================
 function cloneID(id) {
   return new ImageData(new Uint8ClampedArray(id.data), id.width, id.height);
+}
+
+// ================================================================
+//  phase2: ASCII（加工した部分を文字にする）
+//  元のピクセル（pixelData）と「どこが ASCII か」の印（asciiMask）を別々に持つ。
+//  加工は両方にかけ、表示（committedData）を作るときだけ印のマスを文字にする。
+//  こうすると、何度動かしても文字は元の色から選び直され、黒くつぶれない。
+//  文字の並びは、有名な「回るドーナツ」と同じ暗い→明るい順。
+// ================================================================
+const ASCII_RAMP = '.,-~:;=!*#$@';
+const ASCII_MODES = ['Wipe', 'Slide: Scroll', 'Slide: Push']; // Blue と Reveal は文字にしない
+const asciiStyleSel = document.getElementById('ascii-style');
+let asciiDrawStyle = 'color'; // Off にしても、すでに文字になった部分はこの見た目で描く
+asciiStyleSel.addEventListener('change', () => {
+  if (asciiStyleSel.value !== 'off') asciiDrawStyle = asciiStyleSel.value;
+  if (!pixelData) return;
+  committedData = renderAscii(pixelData, asciiMask); // 見た目だけ描き直す
+  render();
+});
+
+let pixelData = null;  // 文字にする前の、本当のピクセル
+let asciiMask = null;  // 白い画素 = ASCII にする場所（加工と一緒に動く）
+let blankMask = null;  // Reveal で印を消すための、空の印
+
+function asciiCellSize(W) { return Math.max(8, Math.round(W / 64)); }
+
+// 確定の前後で変わったマスに、ASCII の印を付ける
+function markChanged(prev, next, mask) {
+  const W = next.width, H = next.height, cell = asciiCellSize(W);
+  const a = prev.data, b = next.data, m = mask.data;
+  for (let cy = 0; cy < H; cy += cell) {
+    const chh = Math.min(cell, H - cy);
+    for (let cx = 0; cx < W; cx += cell) {
+      const cw = Math.min(cell, W - cx);
+      let changed = false;
+      for (let y = cy; y < cy + chh && !changed; y++) {
+        for (let x = cx; x < cx + cw; x++) {
+          const i = (y * W + x) * 4;
+          if (a[i] !== b[i] || a[i+1] !== b[i+1] || a[i+2] !== b[i+2] || a[i+3] !== b[i+3]) { changed = true; break; }
+        }
+      }
+      if (!changed) continue;
+      for (let y = cy; y < cy + chh; y++) {
+        for (let x = cx; x < cx + cw; x++) {
+          const i = (y * W + x) * 4;
+          m[i] = m[i+1] = m[i+2] = m[i+3] = 255;
+        }
+      }
+    }
+  }
+}
+
+// 本当のピクセルと印から、表示用の画像を作る
+function renderAscii(pix, mask) {
+  const W = pix.width, H = pix.height, cell = asciiCellSize(W);
+  const style = asciiDrawStyle;
+  const b = pix.data, m = mask.data;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.putImageData(pix, 0, 0);
+  g.font = `bold ${Math.round(cell * 1.15)}px Menlo, Consolas, monospace`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  for (let cy = 0; cy < H; cy += cell) {
+    const chh = Math.min(cell, H - cy);
+    for (let cx = 0; cx < W; cx += cell) {
+      const cw = Math.min(cell, W - cx);
+      let marked = 0, rS = 0, gS = 0, bS = 0, aS = 0;
+      for (let y = cy; y < cy + chh; y++) {
+        for (let x = cx; x < cx + cw; x++) {
+          const i = (y * W + x) * 4;
+          if (m[i] > 200 && m[i+1] > 200 && m[i+2] > 200 && m[i+3] > 200) marked++;
+          const al = b[i+3];
+          rS += b[i] * al; gS += b[i+1] * al; bS += b[i+2] * al; aS += al;
+        }
+      }
+      if (marked * 2 < cw * chh) continue; // 半分以上に印があるマスだけ文字にする
+      // ほとんど透明なマスは、文字にせず透明のままにする
+      if (aS / (cw * chh) < 0.15 * 255) { g.clearRect(cx, cy, cw, chh); continue; }
+      const r = rS / aS, gg = gS / aS, bb = bS / aS;
+      // 暗い絵でも文字に差が出るように、明るさを持ち上げてから文字を選ぶ
+      const lum = Math.pow((0.2126 * r + 0.7152 * gg + 0.0722 * bb) / 255, 0.6);
+      const chr = ASCII_RAMP[Math.min(ASCII_RAMP.length - 1, Math.floor(lum * ASCII_RAMP.length))];
+      g.fillStyle = style === 'bsod' ? `rgb(${BSOD_BLUE.join(',')})` : '#000';
+      g.fillRect(cx, cy, cw, chh);
+      if (style === 'color') {
+        // 黒地でも見えるように、暗い色は明るく持ち上げる（色味は保つ）
+        const k = Math.min(3, Math.max(1, 210 / Math.max(r, gg, bb, 1)));
+        g.fillStyle = `rgb(${Math.round(r * k)},${Math.round(gg * k)},${Math.round(bb * k)})`;
+      } else {
+        g.fillStyle = style === 'bsod' ? '#ffffff' : '#e6e6e6';
+      }
+      g.fillText(chr, cx + cw / 2, cy + chh / 2 + 1);
+    }
+  }
+  return g.getImageData(0, 0, W, H);
 }
 
 // ================================================================
@@ -845,7 +956,7 @@ function computeWipe(rawDx, rawDy) {
 // ================================================================
 //  EFFECT: SLIDE
 //
-//  Slide: White  – vacated area filled with white
+//  Slide: Blue   – vacated area filled with BSOD blue (#0000AA)
 //  Slide: Reveal – vacated area filled from baseData (original photo)
 // ================================================================
 function computeSlide(rawDx, rawDy) {
@@ -884,7 +995,8 @@ function computeSlide(rawDx, rawDy) {
         dst[di]  =base[di]; dst[di+1]=base[di+1];
         dst[di+2]=base[di+2]; dst[di+3]=base[di+3];
       } else {
-        dst[di]=255; dst[di+1]=255; dst[di+2]=255; dst[di+3]=255;
+        // ブルースクリーンの青（#0000AA）で埋める
+        dst[di]=BSOD_BLUE[0]; dst[di+1]=BSOD_BLUE[1]; dst[di+2]=BSOD_BLUE[2]; dst[di+3]=255;
       }
     }
   }
@@ -1130,13 +1242,30 @@ canvas.addEventListener('pointermove', e => {
   const rawDx = dragCurImg.x - dragStartImg.x;
   const rawDy = dragCurImg.y - dragStartImg.y;
   lastDelta = { dx: rawDx, dy: rawDy };
-  const mode  = MODES[modeIdx];
-  if      (mode === 'Wipe')          previewData = computeWipe(rawDx, rawDy);
-  else if (mode === 'Slide: Scroll') previewData = computeSlideScroll(rawDx, rawDy);
-  else if (mode === 'Slide: Push')   previewData = computeSlidePush(rawDx, rawDy);
-  else                               previewData = computeSlide(rawDx, rawDy);
+  previewData = computeEffect(rawDx, rawDy);
   render(previewData);
 });
+
+// 今のモードで、committedData に加工をかけた結果を返す
+function computeEffect(rawDx, rawDy) {
+  const mode = MODES[modeIdx];
+  if      (mode === 'Wipe')          return computeWipe(rawDx, rawDy);
+  else if (mode === 'Slide: Scroll') return computeSlideScroll(rawDx, rawDy);
+  else if (mode === 'Slide: Push')   return computeSlidePush(rawDx, rawDy);
+  else                               return computeSlide(rawDx, rawDy);
+}
+
+// 別の画像（本当のピクセルや ASCII の印）に、同じ加工をかける
+function computeOn(data, base, d) {
+  const saveC = committedData, saveB = baseData;
+  committedData = data; baseData = base;
+  try { return computeEffect(d.dx, d.dy); }
+  finally { committedData = saveC; baseData = saveB; }
+}
+
+function snapshot() {
+  return { disp: cloneID(committedData), pix: cloneID(pixelData), mask: cloneID(asciiMask) };
+}
 
 canvas.addEventListener('pointerup', e => {
   activePointers.delete(e.pointerId);
@@ -1156,12 +1285,22 @@ canvas.addEventListener('pointerup', e => {
   // inside → drag = stretch (stays pending), tap = discard the pending stretch
   if (dragFromOutside) {
     if (previewData) {
-      undoStack.push(cloneID(committedData));
-      if (undoStack.length > 20) undoStack.shift();
-      committedData = previewData;
+      undoStack.push(snapshot());
+      if (undoStack.length > 12) undoStack.shift();
+      // 本当のピクセルと ASCII の印に同じ加工をかける。
+      // Wipe・Scroll・Push で変わったマスには、新しく ASCII の印を付ける（ASCII: Off なら付けない）
+      const newPix  = computeOn(pixelData, baseData, lastDelta);
+      const newMask = computeOn(asciiMask, blankMask, lastDelta);
+      if (asciiStyleSel.value !== 'off' && ASCII_MODES.includes(MODES[modeIdx])) {
+        markChanged(pixelData, newPix, newMask);
+      }
+      pixelData = newPix;
+      asciiMask = newMask;
+      committedData = renderAscii(pixelData, asciiMask);
       previewData   = null;
       recordFrame(committedData, {
         type: 'stretch',
+        ascii: asciiStyleSel.value,
         mode: MODES[modeIdx],
         selection: { ...selection },
         dx: Math.round(lastDelta.dx),
@@ -1210,8 +1349,10 @@ window.addEventListener('resize', () => applyZoom());
 // ================================================================
 btnReset.addEventListener('click', () => {
   if (!baseData) return;
-  undoStack.push(cloneID(committedData));
+  undoStack.push(snapshot());
   committedData = cloneID(baseData);
+  pixelData     = cloneID(baseData);
+  asciiMask     = cloneID(blankMask);
   selection = null; phase = 'select'; previewData = null;
   recordFrame(committedData, { type: 'reset' });
   render(); updateUI();
@@ -1229,7 +1370,8 @@ modeBtns.forEach(btn => {
 
 btnUndo.addEventListener('click', () => {
   if (undoStack.length === 0) return;
-  committedData = undoStack.pop();
+  const s = undoStack.pop();
+  committedData = s.disp; pixelData = s.pix; asciiMask = s.mask;
   selection = null; phase = 'select'; previewData = null;
   unrecordFrame();
   render(); updateUI();
@@ -1298,7 +1440,7 @@ function updateUI() {
     phaseBadge.textContent = 'APPLY';
     const hints = {
       'Wipe':          'ドラッグで引き伸ばす',
-      'Slide: White':  'ドラッグでスライド（白）',
+      'Slide: Blue':   'ドラッグでスライド（青）',
       'Slide: Reveal': 'ドラッグでスライド（露出）',
       'Slide: Scroll': 'ドラッグでスクロール',
       'Slide: Push':   'ドラッグで押し出す',

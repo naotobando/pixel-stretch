@@ -1,0 +1,16 @@
+{
+  "first": {
+    "Scroll": 12,
+    "Wipe": 19,
+    "Blue": 6,
+    "Push": 9,
+    "Reveal": 4
+  },
+  "second": {
+    "Push": 8,
+    "Reveal": 19,
+    "Wipe": 10,
+    "Blue": 4,
+    "Scroll": 9
+  }
+}
