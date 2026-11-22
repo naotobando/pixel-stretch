@@ -1,0 +1,6 @@
+{
+  ".mode-btn[data-mode=\"3\"]": 24,
+  ".mode-btn[data-mode=\"0\"]": 37,
+  ".mode-btn[data-mode=\"2\"]": 17,
+  ".mode-btn[data-mode=\"4\"]": 22
+}
