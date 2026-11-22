@@ -150,6 +150,9 @@ body.dragging #drop-overlay { display: flex; }
   cursor: crosshair;
   touch-action: none;
 }
+/* 余白ありのときは、キャンバスの外枠だけうっすら見せる（余白は透明） */
+#canvas.has-margin { outline: 1px dashed #2a2a2a; }
+.ctrl-btn.on { background: var(--accent-dim); color: var(--accent); }
 
 /* ---- design tokens ---- */
 :root {
@@ -418,6 +421,7 @@ body.playing #frame-interval { opacity: 0.3; pointer-events: none; }
     </div>
     <div class="tb-divider"></div>
     <div class="tb-group tb-actions">
+      <button class="ctrl-btn" id="btn-margin" title="余白：画像の上下左右に0.5倍の透明な余白を付け、加工を画像の外へはみ出せるようにする (M)"><i class="ti ti-border-outer"></i><span>Margin</span></button>
       <button class="ctrl-btn" id="btn-open" title="画像を開く"><i class="ti ti-photo-plus"></i><span>Open</span></button>
       <button class="ctrl-btn" id="btn-reset" title="Reset (1)"><i class="ti ti-refresh"></i><span>Reset</span></button>
       <button class="ctrl-btn" id="btn-undo"  title="Undo (Z)"><i class="ti ti-arrow-back-up"></i><span>Undo</span></button>
@@ -437,6 +441,7 @@ const DIRS  = ['45°'];
 const SEL_COLOR = '#3d8bfd';
 const CUR_COLOR = '#8ab8ff';
 const MAX_DISP  = 1400; // max canvas side in pixels
+const MARGIN_RATIO = 0.5; // 余白ありのとき、上下左右それぞれに画像の何倍の余白を付けるか
 
 // ================================================================
 //  STATE
@@ -488,22 +493,41 @@ const btnSave      = document.getElementById('btn-save');
 // ================================================================
 //  IMAGE LOADING
 // ================================================================
+// 余白（透明）を付けるかどうか。切り替えると今の画像を置き直す
+let marginOn = false;
+let srcImg = null;      // 置き直し用に、元の画像を持っておく
+let srcUrl = null;
+
+// 画像をキャンバスに置く。余白ありなら、キャンバスを広げて画像を真ん中に置く
+function layoutImage(img) {
+  srcImg = img;
+  const m = marginOn ? MARGIN_RATIO : 0;
+  const fullW = img.naturalWidth  * (1 + 2 * m);
+  const fullH = img.naturalHeight * (1 + 2 * m);
+  const ratio = Math.min(1, MAX_DISP / fullW, MAX_DISP / fullH);
+  canvas.width  = Math.round(fullW * ratio);
+  canvas.height = Math.round(fullH * ratio);
+  const iw = Math.round(img.naturalWidth  * ratio);
+  const ih = Math.round(img.naturalHeight * ratio);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, Math.round((canvas.width - iw) / 2), Math.round((canvas.height - ih) / 2), iw, ih);
+  baseData      = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  committedData = cloneID(baseData);
+  undoStack = []; selection = null; phase = 'select'; previewData = null;
+  canvas.classList.toggle('has-margin', marginOn);
+  resetRecording(baseData);
+}
+
 function loadFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
-    const ratio = Math.min(1, MAX_DISP / img.naturalWidth, MAX_DISP / img.naturalHeight);
-    canvas.width  = Math.round(img.naturalWidth  * ratio);
-    canvas.height = Math.round(img.naturalHeight * ratio);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    baseData      = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    committedData = cloneID(baseData);
-    undoStack = []; selection = null; phase = 'select'; previewData = null;
-    URL.revokeObjectURL(url);
+    if (srcUrl) URL.revokeObjectURL(srcUrl); // 前の画像のURLを片付ける
+    srcUrl = url;
+    layoutImage(img);
     sampleBadge.classList.add('hidden');
     setZoom(1);
-    resetRecording(baseData);
     updateUI(); render();
   };
   img.src = url;
@@ -515,14 +539,7 @@ const SAMPLE_SRC = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAIAAA
 function loadDemo() {
   const img = new Image();
   img.onload = () => {
-    const ratio = Math.min(1, MAX_DISP / img.naturalWidth, MAX_DISP / img.naturalHeight);
-    canvas.width  = Math.round(img.naturalWidth  * ratio);
-    canvas.height = Math.round(img.naturalHeight * ratio);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    baseData      = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    committedData = cloneID(baseData);
-    undoStack = []; selection = null; phase = 'select'; previewData = null;
-    resetRecording(baseData);
+    layoutImage(img);
     updateUI(); render();
   };
   img.src = SAMPLE_SRC;
@@ -616,6 +633,7 @@ async function playFrames() {
   let i = 0;
   const step = () => {
     if (!isPlaying) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // 透明な余白に前のコマが残らないように
     ctx.drawImage(bitmaps[i], 0, 0);
     statusText.textContent = `コマ送り ${i}/${bitmaps.length - 1}${i === 0 ? '（開始）' : ''}　·　Esc / Stop で終了`;
     i++;
@@ -1226,6 +1244,17 @@ paddingSlider.addEventListener('input', () => {
   paddingVal.textContent   = v + 'px';
 });
 
+const btnMargin = document.getElementById('btn-margin');
+btnMargin.addEventListener('click', () => {
+  if (isPlaying) return;
+  marginOn = !marginOn;
+  btnMargin.classList.toggle('on', marginOn);
+  if (!srcImg) return;
+  layoutImage(srcImg); // 置き直すので、加工と記録は最初からになる
+  setZoom(1);
+  updateUI(); render();
+});
+
 btnSave.addEventListener('click', () => {
   ctx.putImageData(committedData, 0, 0);
   const a = document.createElement('a');
@@ -1244,6 +1273,7 @@ document.addEventListener('keydown', e => {
   }
   switch (e.key) {
     case 'p': case 'P': playFrames(); break;
+    case 'm': case 'M': btnMargin.click(); break;
     case '1':           btnReset.click(); break;
 
 
