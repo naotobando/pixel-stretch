@@ -350,7 +350,7 @@ body.dragging #drop-overlay { display: flex; }
 }
 .rec-badge.on   { background: rgba(255, 77, 77, 0.16); color: #ff6b6b; }
 .rec-badge.full { background: rgba(255, 196, 0, 0.16); color: #ffc400; }
-#frame-interval, #ascii-style {
+#frame-interval, #ascii-style, #ascii-rate {
   background: #1e1e1e;
   color: #aaa;
   border: 1px solid #2c2c2c;
@@ -365,7 +365,8 @@ body.playing .tb-modes,
 body.playing .tb-zoom,
 body.playing .tb-actions,
 body.playing #frame-interval,
-body.playing #ascii-style { opacity: 0.3; pointer-events: none; }
+body.playing #ascii-style,
+body.playing #ascii-rate { opacity: 0.3; pointer-events: none; }
 .tb-ascii { flex: 0 0 auto; padding: 0 var(--sp-2); }
 </style>
 </head>
@@ -411,6 +412,14 @@ body.playing #ascii-style { opacity: 0.3; pointer-events: none; }
         <option value="color">ASCII: Color</option>
         <option value="mono">ASCII: Mono</option>
         <option value="bsod">ASCII: BSOD</option>
+        <option value="random">ASCII: Random</option>
+      </select>
+      <select id="ascii-rate" title="Wipe・Scroll・Push のうち、どのくらいの割合を ASCII にするか（ASCII：普通）">
+        <option value="1" selected>毎回</option>
+        <option value="0.5">1:1</option>
+        <option value="0.25">1:3</option>
+        <option value="0.1666667">1:5</option>
+        <option value="0.0909091">1:10</option>
       </select>
     </div>
     <div class="tb-divider"></div>
@@ -588,22 +597,29 @@ function cloneID(id) {
 const ASCII_RAMP = '.,-~:;=!*#$@';
 const ASCII_MODES = ['Wipe', 'Slide: Scroll', 'Slide: Push']; // Blue と Reveal は文字にしない
 const asciiStyleSel = document.getElementById('ascii-style');
-let asciiDrawStyle = 'color'; // Off にしても、すでに文字になった部分はこの見た目で描く
-asciiStyleSel.addEventListener('change', () => {
-  if (asciiStyleSel.value !== 'off') asciiDrawStyle = asciiStyleSel.value;
-  if (!pixelData) return;
-  committedData = renderAscii(pixelData, asciiMask); // 見た目だけ描き直す
-  render();
-});
+const asciiRateSel  = document.getElementById('ascii-rate');
+// 見た目ごとの印の値（印の画素の緑チャンネルに入れて、マスごとに見た目を覚えておく）
+const ASCII_STYLES = ['color', 'mono', 'bsod'];
+const STYLE_CODE   = { color: 60, mono: 140, bsod: 220 };
+function codeToStyle(gv) { return gv < 100 ? 'color' : gv < 180 ? 'mono' : 'bsod'; }
+
+// この確定を ASCII にするなら見た目を返し、しないなら null を返す
+function pickAsciiStyle() {
+  const s = asciiStyleSel.value;
+  if (s === 'off' || !ASCII_MODES.includes(MODES[modeIdx])) return null;
+  if (Math.random() >= parseFloat(asciiRateSel.value)) return null; // ASCII率
+  return s === 'random' ? ASCII_STYLES[Math.floor(Math.random() * ASCII_STYLES.length)] : s;
+}
 
 let pixelData = null;  // 文字にする前の、本当のピクセル
-let asciiMask = null;  // 白い画素 = ASCII にする場所（加工と一緒に動く）
+let asciiMask = null;  // 赤が255の画素 = ASCII にする場所（加工と一緒に動く）。緑 = 見た目
 let blankMask = null;  // Reveal で印を消すための、空の印
 
 function asciiCellSize(W) { return Math.max(8, Math.round(W / 64)); }
 
 // 確定の前後で変わったマスに、ASCII の印を付ける
-function markChanged(prev, next, mask) {
+function markChanged(prev, next, mask, style) {
+  const code = STYLE_CODE[style];
   const W = next.width, H = next.height, cell = asciiCellSize(W);
   const a = prev.data, b = next.data, m = mask.data;
   for (let cy = 0; cy < H; cy += cell) {
@@ -621,7 +637,7 @@ function markChanged(prev, next, mask) {
       for (let y = cy; y < cy + chh; y++) {
         for (let x = cx; x < cx + cw; x++) {
           const i = (y * W + x) * 4;
-          m[i] = m[i+1] = m[i+2] = m[i+3] = 255;
+          m[i] = 255; m[i+1] = code; m[i+2] = 255; m[i+3] = 255;
         }
       }
     }
@@ -631,7 +647,6 @@ function markChanged(prev, next, mask) {
 // 本当のピクセルと印から、表示用の画像を作る
 function renderAscii(pix, mask) {
   const W = pix.width, H = pix.height, cell = asciiCellSize(W);
-  const style = asciiDrawStyle;
   const b = pix.data, m = mask.data;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -645,15 +660,18 @@ function renderAscii(pix, mask) {
     for (let cx = 0; cx < W; cx += cell) {
       const cw = Math.min(cell, W - cx);
       let marked = 0, rS = 0, gS = 0, bS = 0, aS = 0;
+      const votes = { color: 0, mono: 0, bsod: 0 };
       for (let y = cy; y < cy + chh; y++) {
         for (let x = cx; x < cx + cw; x++) {
           const i = (y * W + x) * 4;
-          if (m[i] > 200 && m[i+1] > 200 && m[i+2] > 200 && m[i+3] > 200) marked++;
+          if (m[i] > 200 && m[i+2] > 200 && m[i+3] > 200) { marked++; votes[codeToStyle(m[i+1])]++; }
           const al = b[i+3];
           rS += b[i] * al; gS += b[i+1] * al; bS += b[i+2] * al; aS += al;
         }
       }
       if (marked * 2 < cw * chh) continue; // 半分以上に印があるマスだけ文字にする
+      // マスの中でいちばん多い見た目で描く
+      const style = ASCII_STYLES.reduce((best, s) => votes[s] > votes[best] ? s : best, 'color');
       // ほとんど透明なマスは、文字にせず透明のままにする
       if (aS / (cw * chh) < 0.15 * 255) { g.clearRect(cx, cy, cw, chh); continue; }
       const r = rS / aS, gg = gS / aS, bb = bS / aS;
@@ -1288,19 +1306,18 @@ canvas.addEventListener('pointerup', e => {
       undoStack.push(snapshot());
       if (undoStack.length > 12) undoStack.shift();
       // 本当のピクセルと ASCII の印に同じ加工をかける。
-      // Wipe・Scroll・Push で変わったマスには、新しく ASCII の印を付ける（ASCII: Off なら付けない）
+      // Wipe・Scroll・Push で、ASCII率の抽選に当たったときだけ、変わったマスに ASCII の印を付ける
       const newPix  = computeOn(pixelData, baseData, lastDelta);
       const newMask = computeOn(asciiMask, blankMask, lastDelta);
-      if (asciiStyleSel.value !== 'off' && ASCII_MODES.includes(MODES[modeIdx])) {
-        markChanged(pixelData, newPix, newMask);
-      }
+      const asciiStyle = pickAsciiStyle();
+      if (asciiStyle) markChanged(pixelData, newPix, newMask, asciiStyle);
       pixelData = newPix;
       asciiMask = newMask;
       committedData = renderAscii(pixelData, asciiMask);
       previewData   = null;
       recordFrame(committedData, {
         type: 'stretch',
-        ascii: asciiStyleSel.value,
+        ascii: asciiStyle, // この確定で ASCII にした見た目（しなかったら null）
         mode: MODES[modeIdx],
         selection: { ...selection },
         dx: Math.round(lastDelta.dx),
