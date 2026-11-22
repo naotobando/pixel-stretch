@@ -408,7 +408,7 @@ body.playing #frame-interval { opacity: 0.3; pointer-events: none; }
     </div>
     <div class="tb-divider"></div>
     <div class="tb-group tb-rec">
-      <span class="rec-badge" id="rec-badge" title="確定するたびに自動で記録（最大30回）">REC 0/30</span>
+      <span class="rec-badge" id="rec-badge" title="確定するたびに自動で記録（最大100回）">REC 0/100</span>
       <select id="frame-interval" title="コマ送りの間隔">
         <option value="150">0.15s</option>
         <option value="300" selected>0.3s</option>
@@ -463,7 +463,7 @@ let lastDelta    = { dx: 0, dy: 0 }; // 直近の引き伸ばし量（記録用�
 // ---- phase2: 加工過程の記録 ----
 // frames[0] は開始時の画像。確定するたびに1コマ追加（開始画像を除いて最大 MAX_REC 回）。
 // 各コマ: { blob, op } — blob は確定後の画像（PNG）、op は操作の情報。
-const MAX_REC = 30;
+const MAX_REC = 100;
 let frames    = [];
 let isPlaying = false;
 let playTimer = null;
