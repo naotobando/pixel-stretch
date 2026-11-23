@@ -350,7 +350,7 @@ body.dragging #drop-overlay { display: flex; }
 }
 .rec-badge.on   { background: rgba(255, 77, 77, 0.16); color: #ff6b6b; }
 .rec-badge.full { background: rgba(255, 196, 0, 0.16); color: #ffc400; }
-#play-style, #frame-interval, #ascii-style, #ascii-rate {
+#play-style, #frame-interval, #play-order, #ascii-style, #ascii-rate {
   background: #1e1e1e;
   color: #aaa;
   border: 1px solid #2c2c2c;
@@ -366,6 +366,7 @@ body.playing .tb-zoom,
 body.playing .tb-actions,
 body.playing #play-style,
 body.playing #frame-interval,
+body.playing #play-order,
 body.playing #ascii-style,
 body.playing #ascii-rate { opacity: 0.3; pointer-events: none; }
 .tb-ascii { flex: 0 0 auto; padding: 0 var(--sp-2); }
@@ -433,13 +434,18 @@ body.playing #ascii-rate { opacity: 0.3; pointer-events: none; }
     <div class="tb-group tb-rec">
       <span class="rec-badge" id="rec-badge" title="確定するたびに自動で記録（最大100回）">REC 0/100</span>
       <select id="play-style" title="見せ方：コマ送り（確定ごとの画像を切り替える）／ぬるっと（1回ごとの引き伸ばしを動きで再現する）">
-        <option value="frames" selected>コマ送り</option>
-        <option value="smooth">ぬるっと</option>
+        <option value="frames">コマ送り</option>
+        <option value="smooth" selected>ぬるっと</option>
       </select>
       <select id="frame-interval" title="1回の加工にかける時間">
-        <option value="150">0.15s</option>
-        <option value="300" selected>0.3s</option>
+        <option value="150" selected>0.15s</option>
+        <option value="300">0.3s</option>
         <option value="600">0.6s</option>
+      </select>
+      <select id="play-order" title="再生の向き：順再生（崩れていく）／逆再生（元に戻っていく）／往復（崩れてから戻る）">
+        <option value="forward" selected>順</option>
+        <option value="reverse">逆</option>
+        <option value="pingpong">往復</option>
       </select>
       <button class="ctrl-btn" id="btn-play-frames" title="記録を再生 (P)"><i class="ti ti-player-play"></i><span>Play</span></button>
       <button class="ctrl-btn" id="btn-export" title="今の見せ方で再生しながら WebM 動画に書き出す (E)"><i class="ti ti-movie"></i><span>WebM</span></button>
@@ -759,7 +765,9 @@ function updateRecUI() {
 //            少しずつかけ直して描き、最後に記録した画像を出す（ASCII は最後に文字になる）。
 // ================================================================
 const playStyle = document.getElementById('play-style');
+const playOrder = document.getElementById('play-order');
 const btnExport = document.getElementById('btn-export');
+const ORDER_LABEL = { forward: '順', reverse: '逆', pingpong: '往復' };
 
 // 待つ。Stop されたら途中で起きる
 function playWait(ms) {
@@ -804,8 +812,9 @@ async function playFrames() {
   updateRecUI();
 
   const style    = playStyle.value;
+  const order    = playOrder.value; // forward（順）/ reverse（逆）/ pingpong（往復）
   const interval = parseInt(frameInterval.value, 10);
-  const label    = style === 'smooth' ? 'ぬるっと' : 'コマ送り';
+  const label    = `${style === 'smooth' ? 'ぬるっと' : 'コマ送り'}・${ORDER_LABEL[order] || '順'}`;
   const last     = bitmaps.length - 1;
   const savedMode = modeIdx;
   let done = false;
@@ -816,30 +825,42 @@ async function playFrames() {
       statusText.textContent = `${exporting ? '書き出し中　·　' : ''}${label} ${i}/${last}${i === 0 ? '（開始）' : ''}　·　Esc / Stop で終了`;
     };
 
-    drawBitmap(bitmaps[0]); show(0);
-    await holdUntil(interval);
-    for (let i = 1; i <= last && isPlaying; i++) {
+    // i 回目の加工を1回分見せる。dir=+1 は「i-1 → i」（崩れる向き）、dir=-1 は「i → i-1」（戻る向き）
+    const step = async (i, dir) => {
       const op = rec[i].op;
-      show(i);
+      const target = dir > 0 ? i : i - 1;
+      show(target);
       if (style === 'smooth' && op.type === 'stretch' && (op.dx || op.dy)) {
-        // 1つ前の画像に、同じモード・同じ選択範囲で、引き伸ばし量を少しずつ増やしてかける
+        // 1つ前の画像に、同じモード・同じ選択範囲で引き伸ばし量を少しずつ変えてかける（逆向きは量を減らしていく）
         const prev  = bitmapToID(bitmaps[i - 1]);
         const steps = Math.max(4, Math.round(interval / 35));
         modeIdx   = Math.max(0, MODES.indexOf(op.mode));
         selection = op.selection;
         for (let k = 1; k < steps && isPlaying; k++) {
-          const e = easeInOut(k / steps);
+          const e = easeInOut(dir > 0 ? k / steps : 1 - k / steps);
           ctx.putImageData(computeOn(prev, baseData, { dx: op.dx * e, dy: op.dy * e }), 0, 0);
           await holdUntil(interval / steps);
         }
         selection = null;
-        if (!isPlaying) break;
-        drawBitmap(bitmaps[i]);
+        if (!isPlaying) return;
+        drawBitmap(bitmaps[target]);
         await holdUntil(interval / steps + interval * 0.25); // 1回ごとに、ほんの少し止める
       } else {
-        drawBitmap(bitmaps[i]);
+        drawBitmap(bitmaps[target]);
         await holdUntil(interval);
       }
+    };
+
+    const start = order === 'reverse' ? last : 0;
+    drawBitmap(bitmaps[start]); show(start);
+    await holdUntil(order === 'reverse' ? Math.max(1000, interval * 3) : interval);
+    if (order !== 'reverse') {
+      for (let i = 1; i <= last && isPlaying; i++) await step(i, +1);
+    }
+    // 往復：いちばん崩れたところで少し止めてから戻る
+    if (order === 'pingpong' && isPlaying) await holdUntil(Math.max(800, interval * 3));
+    if (order !== 'forward') {
+      for (let i = last; i >= 1 && isPlaying; i--) await step(i, -1);
     }
     // 最後のコマは少し長めに見せてから戻る
     if (isPlaying) await holdUntil(Math.max(1000, interval * 3));
@@ -894,7 +915,7 @@ async function exportWebM() {
   const blob = new Blob(chunks, { type: 'video/webm' });
   lastExport = blob;
   const a = document.createElement('a');
-  a.download = `pixel-stretch-${playStyle.value}-${Date.now()}.webm`;
+  a.download = `pixel-stretch-${playStyle.value}-${playOrder.value}-${Date.now()}.webm`;
   a.href = URL.createObjectURL(blob);
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
